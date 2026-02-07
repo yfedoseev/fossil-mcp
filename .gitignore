@@ -13,3 +13,5 @@ rules/
 .fossil/
 
 examples/security/
+.playwright-mcp/
+*.png
