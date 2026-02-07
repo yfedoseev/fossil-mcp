@@ -159,7 +159,7 @@ jobs:
           Compress-Archive -Path dist/fossil-mcp.exe -DestinationPath ${{ matrix.artifact_name }}-${VERSION}.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
           path: |
