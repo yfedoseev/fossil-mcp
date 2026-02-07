@@ -371,9 +371,7 @@ fn print_dashboard(
             .max()
             .unwrap_or(1);
         let any_dead = languages.iter().any(|(l, _)| lang_dead.contains_key(l));
-        let any_clone = languages
-            .iter()
-            .any(|(l, _)| lang_clone.contains_key(l));
+        let any_clone = languages.iter().any(|(l, _)| lang_clone.contains_key(l));
 
         for (lang, count) in &languages {
             let dead = *lang_dead.get(lang).unwrap_or(&0);
