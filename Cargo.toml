@@ -63,7 +63,7 @@ indexmap = { version = "2.0", features = ["serde"] }
 dashmap = "6.1"
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # Probabilistic data structures
