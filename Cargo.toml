@@ -1,6 +1,6 @@
 [package]
 name = "fossil-mcp"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 authors = ["Yury Fedoseev <yfedoseev@gmail.com>"]
 license = "MIT OR Apache-2.0"
@@ -43,7 +43,7 @@ tree-sitter-cpp = "0.23"
 tree-sitter-c = "0.24"
 tree-sitter-swift = "0.7"
 tree-sitter-bash = "0.25"
-tree-sitter-scala = "0.24"
+tree-sitter-scala = "0.25"
 tree-sitter-r = "1.2"
 streaming-iterator = "0.1"
 
@@ -63,7 +63,7 @@ indexmap = { version = "2.0", features = ["serde"] }
 dashmap = "6.1"
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # Probabilistic data structures

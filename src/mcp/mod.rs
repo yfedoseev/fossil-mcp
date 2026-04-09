@@ -379,7 +379,7 @@ impl McpServer {
                 },
                 {
                     "name": "fossil_detect_scaffolding",
-                    "description": "Detect AI-generated scaffolding artifacts in source code: phased/temporal function names, phased comments (Phase N/Step N/Part N), TODO/FIXME markers, placeholder method bodies, debug prints, delivery/summary files, framework defaults, verbose doc comments, identical error strings, AI vocabulary density, comment clones, over-documented functions, documented ignored parameters, misleading algorithm names, emoji characters",
+                    "description": "Detect AI-generated scaffolding artifacts in source code: phased/temporal function names, phased comments (Phase N/Step N/Part N), TODO/FIXME markers, placeholder method bodies, debug prints, delivery/summary files, framework defaults, verbose doc comments, identical error strings, AI vocabulary density, comment clones, over-documented functions, documented ignored parameters, misleading algorithm names, emoji characters, hardcoded secrets and credentials",
                     "annotations": annotations,
                     "inputSchema": {
                         "type": "object",
@@ -407,6 +407,10 @@ impl McpServer {
                             "include_emojis": {
                                 "type": "boolean",
                                 "description": "Include emoji characters found anywhere in source code (comments, strings, identifiers) (default: false)"
+                            },
+                            "include_secrets": {
+                                "type": "boolean",
+                                "description": "Include hardcoded secrets and credentials: API keys, passwords, tokens, private keys, webhook URLs, database connection strings with credentials (default: false)"
                             },
                             "limit": {
                                 "type": "integer",

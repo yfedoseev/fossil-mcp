@@ -136,6 +136,157 @@ const CLAUDE_FILE_PATTERN: &str = r"(?i)^CLAUDE.*\.md$";
 const DELIVERY_SIGNOFF_PATTERN: &str = r"(?i)(DELIVERABLES|SIGN_OFF|VALIDATION_REPORT|CHECKLIST)";
 
 // ---------------------------------------------------------------------------
+// Hardcoded secrets detection
+// ---------------------------------------------------------------------------
+
+/// Secret patterns: (regex_pattern, label, confidence).
+/// High confidence = vendor-specific prefix, extremely low false-positive rate.
+/// Medium confidence = generic keyword + assignment, higher false-positive rate.
+const SECRET_PATTERNS: &[(&str, &str, &str)] = &[
+    // ---- High confidence: vendor-specific prefixes ----
+    // OpenAI API key
+    (r"sk-[A-Za-z0-9]{32,}", "openai_api_key", "high"),
+    // Anthropic API key
+    (r"sk-ant-[A-Za-z0-9_\-]{20,}", "anthropic_api_key", "high"),
+    // AWS access key ID
+    (r"AKIA[0-9A-Z]{16}", "aws_access_key", "high"),
+    // GitHub personal access token (classic and fine-grained)
+    (r"ghp_[A-Za-z0-9]{36}", "github_token", "high"),
+    (r"ghs_[A-Za-z0-9]{36}", "github_token", "high"),
+    (r"github_pat_[A-Za-z0-9_]{82}", "github_token", "high"),
+    // Google API key
+    (r"AIza[0-9A-Za-z_\-]{35}", "google_api_key", "high"),
+    // Stripe live keys
+    (r"sk_live_[A-Za-z0-9]{24,}", "stripe_secret_key", "high"),
+    (
+        r"pk_live_[A-Za-z0-9]{24,}",
+        "stripe_publishable_key",
+        "high",
+    ),
+    // PEM-encoded private keys
+    (
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+        "private_key",
+        "high",
+    ),
+    // Slack incoming webhook URL
+    (
+        r"https?://hooks\.slack\.com/services/[A-Za-z0-9/]+",
+        "slack_webhook",
+        "high",
+    ),
+    // Discord bot/webhook URL
+    (
+        r"https?://discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_\-]+",
+        "discord_webhook",
+        "high",
+    ),
+    // Database connection strings with embedded credentials (user:pass@host)
+    (
+        r"(?i)(?:mongodb|postgres(?:ql)?|mysql|redis|amqp|mssql)://[^:\s/]{1,64}:[^@\s]{4,}@",
+        "db_connection_string",
+        "high",
+    ),
+    // ---- Medium confidence: generic keyword + quoted assignment ----
+    // Generic API key / token assignment
+    (
+        r#"(?i)\b(?:api[_\-]?key|apikey|api[_\-]?token)\s*[:=]\s*["'][A-Za-z0-9_\-\.]{16,}["']"#,
+        "api_key",
+        "medium",
+    ),
+    // Password assignment
+    (
+        r#"(?i)\b(?:password|passwd|pwd)\s*[:=]\s*["'][^"']{4,}["']"#,
+        "password",
+        "medium",
+    ),
+    // Generic secret / client_secret assignment
+    (
+        r#"(?i)\b(?:secret|client[_\-]?secret|secret[_\-]?key|secret[_\-]?token)\s*[:=]\s*["'][^"']{8,}["']"#,
+        "secret",
+        "medium",
+    ),
+    // JWT token (header.payload.signature — all base64url segments)
+    (
+        r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}",
+        "jwt_token",
+        "medium",
+    ),
+];
+
+/// Known placeholder / dummy values that should NOT be flagged as real secrets.
+/// These must be longer/specific enough to avoid false-positive substring matches
+/// inside legitimate-looking test keys.
+const SECRET_PLACEHOLDERS: &[&str] = &[
+    "your_api_key",
+    "your-api-key",
+    "your_key_here",
+    "insert_key_here",
+    "insert_key",
+    "replace_me",
+    "replaceme",
+    "changeme",
+    "change_me",
+    "placeholder",
+    // Require a longer run of x's to avoid matching partial path segments in URLs
+    "xxxxxxxxxxxxxxxxxxxx", // 20 x's
+    "********************", // 20 asterisks
+    "password123",
+    "your_secret",
+    "my_secret",
+];
+
+/// Environment variable access patterns — lines with these are NOT hardcoded secrets.
+const ENV_VAR_PATTERNS: &[&str] = &[
+    "process.env.",
+    "os.environ",
+    "std::env::var",
+    "env::var(",
+    "getenv(",
+    "ENV[",
+    "ENV.fetch",
+    "$ENV{",
+    "from_env",
+    "env!(\"",
+    "dotenv",
+];
+
+/// Return a redacted representation of a secret match: first ≤8 chars + `***`.
+fn redact_secret(matched: &str) -> String {
+    let chars: Vec<char> = matched.chars().collect();
+    let show = chars.len().min(8);
+    format!("{}***", chars[..show].iter().collect::<String>())
+}
+
+/// Return `true` if the line appears to read a secret from an environment variable.
+fn is_env_var_line(line: &str) -> bool {
+    ENV_VAR_PATTERNS.iter().any(|p| line.contains(p))
+}
+
+/// Return `true` if the matched text is a recognisable placeholder rather than a real secret.
+fn is_placeholder_secret(matched: &str) -> bool {
+    let lower = matched.to_lowercase();
+    // Explicit placeholder strings
+    if SECRET_PLACEHOLDERS.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    // All-same-character runs (e.g. "aaaaaaa", "1111111")
+    let chars: Vec<char> = lower.chars().collect();
+    if chars.len() > 4 && chars.iter().all(|&c| c == chars[0]) {
+        return true;
+    }
+    // Shell / template variable syntax inside the value
+    lower.starts_with("your_")
+        || lower.starts_with("my_")
+        || lower.starts_with('<')
+        || lower.ends_with('>')
+        || lower.starts_with("${")
+        || lower.starts_with("%(")
+        || lower.contains("getenv")
+        || lower.contains("environ")
+}
+
+// ---------------------------------------------------------------------------
 // Emoji detection
 // ---------------------------------------------------------------------------
 
@@ -777,6 +928,7 @@ fn is_doc_comment_line(trimmed: &str, ext: &str) -> bool {
 /// - `include_todos` (bool, optional): Include TODO/FIXME markers (default: false).
 /// - `include_placeholders` (bool, optional): Include placeholder bodies (default: true).
 /// - `include_emojis` (bool, optional): Include emoji characters (default: false).
+/// - `include_secrets` (bool, optional): Include hardcoded secrets and credentials (default: false).
 pub fn execute_detect_scaffolding(args: &HashMap<String, Value>) -> Result<Value, String> {
     let path = args
         .get("path")
@@ -813,6 +965,11 @@ pub fn execute_detect_scaffolding(args: &HashMap<String, Value>) -> Result<Value
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let include_secrets = args
+        .get("include_secrets")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     // Compile regexes.
     let re_phased = Regex::new(PHASED_PATTERN).map_err(|e| format!("Regex error: {e}"))?;
     let re_temporal = Regex::new(TEMPORAL_PATTERN).map_err(|e| format!("Regex error: {e}"))?;
@@ -838,6 +995,18 @@ pub fn execute_detect_scaffolding(args: &HashMap<String, Value>) -> Result<Value
         .iter()
         .filter_map(|p| Regex::new(p).ok())
         .collect();
+
+    // Pre-compile secret patterns only when needed.
+    let secret_regexes: Vec<(Regex, &'static str, &'static str)> = if include_secrets {
+        SECRET_PATTERNS
+            .iter()
+            .filter_map(|&(pat, label, confidence)| {
+                Regex::new(pat).ok().map(|re| (re, label, confidence))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let framework_default_regexes: Vec<Regex> = FRAMEWORK_DEFAULT_PATTERNS
         .iter()
@@ -1178,6 +1347,26 @@ pub fn execute_detect_scaffolding(args: &HashMap<String, Value>) -> Result<Value
                         "pattern": "emoji",
                         "confidence": "medium",
                     }));
+                }
+            }
+
+            // --- Hardcoded secrets detection ---
+            if include_secrets && !is_env_var_line(line) {
+                for (re, label, confidence) in &secret_regexes {
+                    if let Some(m) = re.find(line) {
+                        let matched = m.as_str();
+                        if !is_placeholder_secret(matched) {
+                            findings.push(json!({
+                                "file": rel_path,
+                                "line": line_num,
+                                "category": "hardcoded_secret",
+                                "match_text": redact_secret(matched),
+                                "pattern": label,
+                                "confidence": confidence,
+                            }));
+                            break; // one secret finding per line is sufficient
+                        }
+                    }
                 }
             }
 
@@ -3332,5 +3521,371 @@ mod tests {
         assert_eq!(emojis[0]["line"], 1);
         assert_eq!(emojis[1]["line"], 1);
         assert_eq!(emojis[2]["line"], 1);
+    }
+
+    // ---- Hardcoded secrets detection tests ----
+
+    fn run_secrets(dir: &TempDir) -> Value {
+        let mut args = HashMap::new();
+        args.insert(
+            "path".to_string(),
+            Value::String(dir.path().to_string_lossy().to_string()),
+        );
+        args.insert("include_secrets".to_string(), Value::Bool(true));
+        args.insert("include_todos".to_string(), Value::Bool(false));
+        args.insert("include_placeholders".to_string(), Value::Bool(false));
+        args.insert("include_phased_comments".to_string(), Value::Bool(false));
+        args.insert("include_temp_files".to_string(), Value::Bool(false));
+        let result = execute_detect_scaffolding(&args).unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        serde_json::from_str(text).unwrap()
+    }
+
+    fn secrets_by_pattern<'a>(findings: &'a [Value], pattern: &str) -> Vec<&'a Value> {
+        findings
+            .iter()
+            .filter(|f| f["category"] == "hardcoded_secret" && f["pattern"] == pattern)
+            .collect()
+    }
+
+    // --- Unit tests for helper functions ---
+
+    #[test]
+    fn test_redact_secret_short() {
+        // Shorter than 8 chars → show all + ***
+        let r = redact_secret("abc");
+        assert_eq!(r, "abc***");
+    }
+
+    #[test]
+    fn test_redact_secret_long() {
+        let r = redact_secret("sk-abcdefghijklmn");
+        assert_eq!(r, "sk-abcde***");
+    }
+
+    #[test]
+    fn test_is_placeholder_secret_known() {
+        assert!(is_placeholder_secret("your_api_key_here"));
+        assert!(is_placeholder_secret("replaceme"));
+        assert!(is_placeholder_secret("changeme"));
+        assert!(is_placeholder_secret("xxxxxxxxxxxx"));
+        assert!(is_placeholder_secret("placeholder"));
+        assert!(is_placeholder_secret("password123"));
+        assert!(is_placeholder_secret("<api_key>"));
+        assert!(is_placeholder_secret("${API_KEY}"));
+        assert!(is_placeholder_secret("your_token"));
+    }
+
+    #[test]
+    fn test_is_placeholder_secret_real() {
+        // Real-looking values should NOT be flagged as placeholders
+        assert!(!is_placeholder_secret(
+            "sk-FakeKeyAbcXYZwxyzABCDEFGHIJKLMNOP"
+        ));
+        assert!(!is_placeholder_secret("AKIAIOSFODNN7FAKETST1"));
+        assert!(!is_placeholder_secret(
+            "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+        ));
+    }
+
+    #[test]
+    fn test_is_env_var_line() {
+        assert!(is_env_var_line(r#"let key = process.env.API_KEY;"#));
+        assert!(is_env_var_line(r#"key = os.environ.get("API_KEY")"#));
+        assert!(is_env_var_line(
+            r#"let key = std::env::var("KEY").unwrap();"#
+        ));
+        assert!(is_env_var_line(r#"password = getenv("PASSWORD")"#));
+        // Not an env var line
+        assert!(!is_env_var_line(
+            r#"let key = "sk-hardcodedkey12345678901234";"#
+        ));
+    }
+
+    // --- Integration tests ---
+
+    #[test]
+    fn integration_secrets_disabled_by_default() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("config.py");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(
+            f,
+            r#"API_KEY = "sk-abcdefghijklmnopqrstuvwxyz1234567890abcd""#
+        )
+        .unwrap();
+
+        let parsed = run_scaffolding(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let secrets: Vec<&Value> = findings
+            .iter()
+            .filter(|f| f["category"] == "hardcoded_secret")
+            .collect();
+        assert!(
+            secrets.is_empty(),
+            "Secrets detection should be opt-in (disabled by default)"
+        );
+    }
+
+    #[test]
+    fn integration_openai_key_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("client.py");
+        let mut f = fs::File::create(&file_path).unwrap();
+        // Use a key without sequential digit runs that could match placeholder patterns
+        writeln!(
+            f,
+            r#"openai.api_key = "sk-FakeKeyAbcXYZwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ""#
+        )
+        .unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "openai_api_key");
+
+        assert_eq!(hits.len(), 1, "Should detect OpenAI API key");
+        assert_eq!(hits[0]["confidence"], "high");
+        // match_text must be redacted — should not contain the full key
+        let match_text = hits[0]["match_text"].as_str().unwrap();
+        assert!(
+            match_text.ends_with("***"),
+            "match_text should be redacted: {match_text}"
+        );
+    }
+
+    #[test]
+    fn integration_aws_key_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("aws.js");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(f, r#"const accessKeyId = "AKIAIOSFODNN7FAKETST1";"#).unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "aws_access_key");
+
+        assert_eq!(hits.len(), 1, "Should detect AWS access key");
+        assert_eq!(hits[0]["confidence"], "high");
+    }
+
+    #[test]
+    fn integration_github_token_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("deploy.sh");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(f, "GH_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a").unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "github_token");
+
+        assert_eq!(hits.len(), 1, "Should detect GitHub token");
+        assert_eq!(hits[0]["confidence"], "high");
+    }
+
+    #[test]
+    fn integration_private_key_header_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("keys.rs");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(f, r#"let pem = "-----BEGIN RSA PRIVATE KEY-----";"#).unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "private_key");
+
+        assert_eq!(hits.len(), 1, "Should detect private key header");
+        assert_eq!(hits[0]["confidence"], "high");
+    }
+
+    #[test]
+    fn integration_password_assignment_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("db.py");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(f, r#"password = "s3cur3P@ssw0rd!""#).unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "password");
+
+        assert_eq!(hits.len(), 1, "Should detect hardcoded password");
+        assert_eq!(hits[0]["confidence"], "medium");
+    }
+
+    #[test]
+    fn integration_stripe_live_key_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("payments.ts");
+        let mut f = fs::File::create(&file_path).unwrap();
+        // Build the value at runtime so the literal never appears in source
+        // and does not trigger GitHub push-protection secret scanning.
+        let key = ["sk", "_live_", "abcdefghijklmnopqrstuvwx"].concat();
+        writeln!(f, r#"const stripe = Stripe("{key}");"#).unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "stripe_secret_key");
+
+        assert_eq!(hits.len(), 1, "Should detect Stripe live key");
+        assert_eq!(hits[0]["confidence"], "high");
+    }
+
+    #[test]
+    fn integration_db_connection_string_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("app.go");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(
+            f,
+            r#"db, _ := sql.Open("postgres", "postgres://admin:s3cr3t@localhost:5432/mydb")"#
+        )
+        .unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "db_connection_string");
+
+        assert_eq!(
+            hits.len(),
+            1,
+            "Should detect DB connection string with credentials"
+        );
+        assert_eq!(hits[0]["confidence"], "high");
+    }
+
+    #[test]
+    fn integration_env_var_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("config.js");
+        let mut f = fs::File::create(&file_path).unwrap();
+        // Values loaded from env — should NOT be flagged
+        writeln!(f, r#"const apiKey = process.env.OPENAI_API_KEY;"#).unwrap();
+        writeln!(f, r#"const secret = process.env.CLIENT_SECRET;"#).unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let secrets: Vec<&Value> = findings
+            .iter()
+            .filter(|f| f["category"] == "hardcoded_secret")
+            .collect();
+
+        assert!(
+            secrets.is_empty(),
+            "Env-var references should not be flagged: {secrets:?}"
+        );
+    }
+
+    #[test]
+    fn integration_placeholder_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("example.py");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(f, r#"api_key = "your_api_key_here""#).unwrap();
+        writeln!(f, r#"password = "changeme""#).unwrap();
+        writeln!(f, r#"secret = "replaceme""#).unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let secrets: Vec<&Value> = findings
+            .iter()
+            .filter(|f| f["category"] == "hardcoded_secret")
+            .collect();
+
+        assert!(
+            secrets.is_empty(),
+            "Placeholder secrets should not be flagged: {secrets:?}"
+        );
+    }
+
+    #[test]
+    fn integration_slack_webhook_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("notify.py");
+        let mut f = fs::File::create(&file_path).unwrap();
+        // Build the URL at runtime so the literal does not trigger GitHub push-protection.
+        let url = [
+            "https://hooks.slack",
+            ".com/services/T0AAAAAA1/B0BBBBBBB/AbCdEfGhIjKlMnOpQrStUvWx",
+        ]
+        .concat();
+        writeln!(f, r#"WEBHOOK = "{url}""#).unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "slack_webhook");
+
+        assert_eq!(hits.len(), 1, "Should detect Slack webhook URL");
+        assert_eq!(hits[0]["confidence"], "high");
+    }
+
+    #[test]
+    fn integration_secret_match_text_is_redacted() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("auth.rs");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(
+            f,
+            r#"const API_KEY: &str = "sk-FakeKeyAbcXYZwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";"#
+        )
+        .unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits: Vec<&Value> = findings
+            .iter()
+            .filter(|f| f["category"] == "hardcoded_secret")
+            .collect();
+
+        assert_eq!(hits.len(), 1);
+        let match_text = hits[0]["match_text"].as_str().unwrap();
+        // Should be redacted — must not contain the full key value
+        assert!(
+            match_text.ends_with("***"),
+            "match_text should end with *** (redacted): {match_text}"
+        );
+        assert!(
+            match_text.len() < 30,
+            "match_text should be short (redacted): {match_text}"
+        );
+    }
+
+    #[test]
+    fn integration_google_api_key_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("maps.js");
+        let mut f = fs::File::create(&file_path).unwrap();
+        writeln!(
+            f,
+            r#"const MAPS_KEY = "AIzaSyD3aKfGH9XbTpQr2VwZyN1J4eL8moCuW7s";"#
+        )
+        .unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "google_api_key");
+
+        assert_eq!(hits.len(), 1, "Should detect Google API key");
+        assert_eq!(hits[0]["confidence"], "high");
+    }
+
+    #[test]
+    fn integration_jwt_token_detected() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test_auth.py");
+        let mut f = fs::File::create(&file_path).unwrap();
+        // A real-looking JWT (header.payload.signature)
+        writeln!(
+            f,
+            r#"TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c""#
+        )
+        .unwrap();
+
+        let parsed = run_secrets(&dir);
+        let findings = parsed["findings"].as_array().unwrap();
+        let hits = secrets_by_pattern(findings, "jwt_token");
+
+        assert_eq!(hits.len(), 1, "Should detect hardcoded JWT token");
+        assert_eq!(hits[0]["confidence"], "medium");
     }
 }

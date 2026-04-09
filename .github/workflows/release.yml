@@ -161,7 +161,7 @@ jobs:
           Compress-Archive -Path dist/fossil-mcp.exe -DestinationPath ${{ matrix.artifact_name }}.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -178,7 +178,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -189,38 +189,19 @@ jobs:
           echo "=== Release files ==="
           ls -lh release-files/
 
-      - name: Generate release notes
+      - name: Extract release notes from CHANGELOG
         run: |
-          cat << 'EOF' > release-notes.md
-          ## fossil-mcp v${{ needs.validate.outputs.version }}
+          chmod +x .github/scripts/extract-release-notes.sh
+          .github/scripts/extract-release-notes.sh "${{ needs.validate.outputs.version }}"
 
-          The code quality toolkit for the vibe coding era.
-
-          ### Installation
-
-          #### From crates.io
-          ```bash
-          cargo install fossil-mcp
-          ```
-
-          #### Pre-built Binaries
-          Download the appropriate archive for your platform from the assets below, extract, and place `fossil-mcp` in your PATH.
-
-          ### Platform Support
-          | Platform | Architecture | Archive |
-          |----------|-------------|---------|
-          | Linux | x86_64 (recommended) | `fossil-mcp-linux-x86_64-musl-*.tar.gz` |
-          | Linux | x86_64 (glibc) | `fossil-mcp-linux-x86_64-*.tar.gz` |
-          | Linux | ARM64 | `fossil-mcp-linux-aarch64-*.tar.gz` |
-          | macOS | x86_64 (Intel) | `fossil-mcp-macos-x86_64-*.tar.gz` |
-          | macOS | ARM64 (Apple Silicon) | `fossil-mcp-macos-aarch64-*.tar.gz` |
-          | Windows | x86_64 | `fossil-mcp-windows-x86_64-*.zip` |
-          EOF
+      - name: Read release title
+        id: title
+        run: echo "title=$(cat release-title.txt)" >> $GITHUB_OUTPUT
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: fossil-mcp v${{ needs.validate.outputs.version }}
+          name: ${{ steps.title.outputs.title }}
           body_path: release-notes.md
           files: release-files/*
           draft: false

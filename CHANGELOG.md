@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-04-08
+
+### Added
+
+- **Hardcoded secrets detection in scaffolding scanner** — contributed by [@nooscraft](https://github.com/nooscraft) in [#45](https://github.com/yfedoseev/fossil-mcp/pull/45)
+  - New `include_secrets` parameter (default: false) for `fossil_detect_scaffolding`
+  - Detects ~15 secret patterns: OpenAI, Anthropic, AWS, GitHub, Google, Stripe API keys, PEM headers, Slack/Discord webhooks, DB connection strings with credentials, JWT tokens
+  - High and medium confidence findings with automatic redaction (first 8 chars + `***`)
+  - Environment variable access lines are excluded to reduce false positives
+  - Known placeholder strings (changeme, your_api_key, etc.) are filtered out
+  - 17 new tests (unit + integration) covering all pattern types, redaction, and exclusions
+
+### Changed
+
+- **Dependency updates**
+  - `sha2` 0.10 → 0.11 ([#43](https://github.com/yfedoseev/fossil-mcp/pull/43))
+  - `tree-sitter-scala` 0.24 → 0.25 ([#41](https://github.com/yfedoseev/fossil-mcp/pull/41))
+  - `actions/upload-artifact` v6 → v7 ([#38](https://github.com/yfedoseev/fossil-mcp/pull/38))
+  - `actions/download-artifact` v7 → v8 ([#39](https://github.com/yfedoseev/fossil-mcp/pull/39))
+
+### Contributors
+
+Thank you to [@nooscraft](https://github.com/nooscraft) for another great contribution!
+
+[0.1.8]: https://github.com/yfedoseev/fossil-mcp/compare/v0.1.7...v0.1.8
+
 ## [0.1.7] - 2026-02-19
 
 ### Added
